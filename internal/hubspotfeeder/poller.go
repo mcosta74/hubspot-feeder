@@ -2,6 +2,7 @@ package hubspotfeeder
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,17 +14,31 @@ type Poller interface {
 	Poll(context.Context) error
 }
 
-type hubspotPoller struct {
-	apiKey string
-	logger *slog.Logger
-	client *http.Client
+type GetTagsResponse struct {
+	Total   int    `json:"total,omitempty"`
+	Results []*Tag `json:"results,omitempty"`
 }
 
-func NewPoller(apiKey string, logger *slog.Logger) Poller {
+type GetPostsResponse struct {
+	Total   int     `json:"total,omitempty"`
+	Results []*Post `json:"results,omitempty"`
+}
+
+type hubspotPoller struct {
+	apiKey     string
+	logger     *slog.Logger
+	client     *http.Client
+	repository PostRepository
+	interval   time.Duration
+}
+
+func NewPoller(apiKey string, logger *slog.Logger, repository PostRepository, interval time.Duration) Poller {
 	return &hubspotPoller{
-		apiKey: apiKey,
-		logger: logger,
-		client: &http.Client{},
+		apiKey:     apiKey,
+		logger:     logger,
+		client:     &http.Client{},
+		repository: repository,
+		interval:   interval,
 	}
 }
 
@@ -35,17 +50,18 @@ func (p *hubspotPoller) Poll(ctx context.Context) error {
 		return fmt.Errorf("error getting tags from the host: %w", err)
 	}
 
-	ticker := time.NewTicker(30 * time.Second)
+	p.getPosts()
+
+	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			p.logger.Debug("tick")
+			p.getPosts()
 
 		case <-ctx.Done():
 			return ctx.Err()
-
 		}
 	}
 }
@@ -65,12 +81,15 @@ func (p *hubspotPoller) getTags() error {
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
+	var tagResponse GetTagsResponse
+
+	if err := json.NewDecoder(resp.Body).Decode(&tagResponse); err != nil {
 		return fmt.Errorf("error reading response body: %w", err)
 	}
 
-	p.logger.Debug("response", "body", string(respBody))
+	if err := p.repository.SetTags(tagResponse.Results); err != nil {
+		return fmt.Errorf("error storing tags: %w", err)
+	}
 
 	return nil
 }
@@ -101,4 +120,39 @@ func (p *hubspotPoller) executeRequest(req *http.Request, expectedCodes []int) (
 		}
 	}
 	return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+}
+
+func (p *hubspotPoller) getPosts() error {
+	p.logger.Debug("getting posts")
+	defer p.logger.Debug("posts retrieved")
+
+	for _, tag := range p.repository.GetTags() {
+		fmt.Printf("Tag: %s, %s\n", tag.ID, tag.Name)
+		req, err := p.prepareRequest(
+			http.MethodGet,
+			fmt.Sprintf("/blogs/posts?tagId__in=%s&state=PUBLISHED", tag.ID),
+			nil,
+		)
+		if err != nil {
+			return err
+		}
+
+		resp, err := p.executeRequest(req, []int{http.StatusOK})
+		if err != nil {
+			return fmt.Errorf("error making request: %w", err)
+		}
+		defer resp.Body.Close()
+
+		var postsResponse GetPostsResponse
+
+		if err := json.NewDecoder(resp.Body).Decode(&postsResponse); err != nil {
+			return fmt.Errorf("error reading response body: %w", err)
+		}
+
+		if err := p.repository.SetPostsForTag(tag.Name, postsResponse.Results); err != nil {
+			return fmt.Errorf("error storing posts: %w", err)
+		}
+	}
+
+	return nil
 }
