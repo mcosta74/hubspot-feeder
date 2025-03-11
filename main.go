@@ -57,7 +57,7 @@ func main() {
 	var (
 		repository = hubspotfeeder.NewRepository()
 		poller     = hubspotfeeder.NewPoller(apiKey, logger.With("component", "POLLER"), repository, pollInterval)
-		handler    = hubspotfeeder.MakeHttpHandler(repository)
+		handler    = hubspotfeeder.MakeHttpHandler(repository, logger.With("component", "HTTP"))
 	)
 
 	var g run.Group

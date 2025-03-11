@@ -50,7 +50,9 @@ func (p *hubspotPoller) Poll(ctx context.Context) error {
 		return fmt.Errorf("error getting tags from the host: %w", err)
 	}
 
-	p.getPosts()
+	if err := p.getPosts(); err != nil {
+		p.logger.Error("error fetching posts", "err", err)
+	}
 
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
@@ -58,7 +60,9 @@ func (p *hubspotPoller) Poll(ctx context.Context) error {
 	for {
 		select {
 		case <-ticker.C:
-			p.getPosts()
+			if err := p.getPosts(); err != nil {
+				p.logger.Error("error fetching posts", "err", err)
+			}
 
 		case <-ctx.Done():
 			return ctx.Err()
@@ -153,6 +157,5 @@ func (p *hubspotPoller) getPosts() error {
 			return fmt.Errorf("error storing posts: %w", err)
 		}
 	}
-
 	return nil
 }
